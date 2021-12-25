@@ -1,6 +1,11 @@
 from pyspark.sql import SparkSession
-from pyspark.sql.functions import col,date_format
+from pyspark.sql.functions import col, collect_list, desc, lit, struct, avg,sum,date_format,count,when
+from functools import reduce 
+from pyspark.sql.types import DoubleType
+from pyspark.sql.functions import round
+import pyspark.sql.functions as func
 
+  
 def init_spark():
   sql = SparkSession.builder\
     .appName("trip-app")\
@@ -16,20 +21,45 @@ def main():
     "password": "casa1234",
     "driver": "org.postgresql.Driver"
   }
-  file = "/opt/spark-data/MTA_2014_08_01.csv"
+  
+  file = "/opt/spark-data/HLTau.csv"
   sql,sc = init_spark()
 
-  df = sql.read.load(file,format = "csv", inferSchema="true", sep="\t", header="true"
+  df = sql.read.load(file,format = "csv", inferSchema="true", sep=",", header="true"
       ) \
-      .withColumn("report_hour",date_format(col("time_received"),"yyyy-MM-dd HH:00:00")) \
-      .withColumn("report_date",date_format(col("time_received"),"yyyy-MM-dd"))
+      .withColumn("u2", col("u")**2) \
+      .withColumn("v2", col("v")**2) \
+      .withColumn("square", col("u2")+col("v2")) \
+      .withColumn("raiz", col("square")**(1/2)) \
+      .withColumn("value", when((col('raiz') < 3000 ) | (col('raiz') > 3000), None).otherwise(col('raiz'))) \
+      .withColumn("visibilidad", func.round(col("raiz"), 2))
   
   # Filter invalid coordinates
-  df.where("latitude <= 90 AND latitude >= -90 AND longitude <= 180 AND longitude >= -180") \
-    .where("latitude != 0.000000 OR longitude !=  0.000000 ") \
-    .write \
-    .jdbc(url=url, table="mta_reports", mode='append', properties=properties) \
-    .save()
+  df.show()
+
+  # Count & groups
+  df.select(avg(col('visibilidad'))).show()
+  df.distinct().show()
+  N = df.count()
+   
+  df_1_new = df.filter(col('visibilidad') > 3111) \
+    .agg(count(func.lit(1)).alias("Num Of Records"),func.mean("r").alias("Media real"),func.mean("i").alias("Media imaginaria"),func.mean("raiz").alias("Potencia"),func.mean("w").alias("Ruido total"))
+  
+
+  df_2_new = df.filter(col('visibilidad') < 3111) \
+    .agg(count(func.lit(1)).alias("Num Of Records"),func.mean("r").alias("Media real"),func.mean("i").alias("Media imaginaria"),func.mean("raiz").alias("Potencia"),func.mean("w").alias("Ruido total"))
+
+
+  result = df_1_new.union(df_2_new)
+
+  result.show()
+
+  #partitionBy() control number of partitions
+  result.write.option("header",True) \
+        .option("maxRecordsPerFile", 2) \
+        .partitionBy("visibilidad") \
+        .mode("overwrite") \
+        .csv("/tmp/zipcodes-state")
   
 if __name__ == '__main__':
   main()
